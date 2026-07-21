@@ -495,13 +495,14 @@ df_fisher <- bind_rows(df_fisher_list) %>%
 
 df_fisher$group <- factor(df_fisher$group, levels = c("All", "VIP", "AVP", "CCK", "Other"))
 
-print(df_fisher)
+print(as.data.frame(df_fisher))
 
 # 見やすいように主要列だけ表示
 df_fisher %>%
   select(gene_label, group, condition, n_gpr176_pos, n_gpr176_neg,
          frac_receptor_in_pos, frac_receptor_in_neg, odds_ratio, p_value, sig) %>%
-  print(n = Inf)
+  as.data.frame() %>%
+  print()
 
 # -------------------------
 # 10. p値付きバープロット
@@ -531,4 +532,5 @@ p_fisher
 df_fisher %>%
   select(gene_label, group, condition, n_gpr176_pos, n_gpr176_neg) %>%
   distinct() %>%
-  print(n = Inf)
+  as.data.frame() %>%
+  print()
