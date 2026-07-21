@@ -407,3 +407,128 @@ p_light_receptor <- ggplot(df_dot_light_receptor, aes(x = gene, y = cluster)) +
 
 p_dark_receptor
 p_light_receptor
+
+# =========================================================
+# 9. Gpr176+ vs Gpr176- でのFisher正確検定
+#
+#   「Gpr176+細胞での受容体陽性率は低い」という生の%だけでは
+#   説得力が判断しにくいので、Gpr176+細胞とGpr176-細胞で
+#   受容体陽性率に統計的な差があるかをFisher正確検定で検証する。
+#   小さい%でも、Gpr176-細胞との比較で有意差(p値)があれば
+#   「意味のある共発現」として主張できる。
+# =========================================================
+
+calc_fisher_gpr176 <- function(seu, receptor_gene) {
+  expr <- GetAssayData(seu, layer = "data")
+
+  if (!(receptor_gene %in% rownames(expr))) {
+    warning(paste0(receptor_gene, " not found in this object; skipped."))
+    return(NULL)
+  }
+
+  df <- data.frame(
+    cluster2     = as.character(seu$cluster2),
+    gpr176_pos   = as.vector(expr["Gpr176", ] > 0),
+    receptor_pos = as.vector(expr[receptor_gene, ] > 0)
+  )
+  df$group <- assign_group(df$cluster2)
+
+  run_fisher <- function(sub_df) {
+    tbl <- table(
+      factor(sub_df$gpr176_pos, levels = c(TRUE, FALSE)),
+      factor(sub_df$receptor_pos, levels = c(TRUE, FALSE))
+    )
+    # tbl:            receptor+   receptor-
+    #   Gpr176+           a           b
+    #   Gpr176-           c           d
+    ft <- fisher.test(tbl)
+
+    data.frame(
+      n_gpr176_pos            = sum(sub_df$gpr176_pos),
+      n_gpr176_neg            = sum(!sub_df$gpr176_pos),
+      frac_receptor_in_pos    = mean(sub_df$receptor_pos[sub_df$gpr176_pos]),
+      frac_receptor_in_neg    = mean(sub_df$receptor_pos[!sub_df$gpr176_pos]),
+      odds_ratio              = unname(ft$estimate),
+      p_value                 = ft$p.value
+    )
+  }
+
+  # 全体(All)
+  overall <- run_fisher(df)
+  overall$group <- "All"
+
+  # サブタイプ別
+  by_group <- df %>%
+    group_by(group) %>%
+    group_modify(~ run_fisher(.x)) %>%
+    ungroup()
+
+  result <- bind_rows(overall, by_group)
+  result$gene <- receptor_gene
+  result
+}
+
+df_fisher_list <- list()
+
+for (gene_label in names(receptor_genes)) {
+  gene <- receptor_genes[[gene_label]]
+
+  res_dark  <- calc_fisher_gpr176(scn_dark,  gene)
+  res_light <- calc_fisher_gpr176(scn_light, gene)
+
+  if (!is.null(res_dark))  res_dark$condition  <- "Dark"
+  if (!is.null(res_light)) res_light$condition <- "Light"
+
+  df_fisher_list[[gene_label]] <- bind_rows(res_dark, res_light) %>%
+    mutate(gene_label = gene_label)
+}
+
+df_fisher <- bind_rows(df_fisher_list) %>%
+  mutate(
+    sig = case_when(
+      p_value < 0.001 ~ "***",
+      p_value < 0.01  ~ "**",
+      p_value < 0.05  ~ "*",
+      TRUE            ~ "ns"
+    )
+  )
+
+df_fisher$group <- factor(df_fisher$group, levels = c("All", "VIP", "AVP", "CCK", "Other"))
+
+print(df_fisher)
+
+# 見やすいように主要列だけ表示
+df_fisher %>%
+  select(gene_label, group, condition, n_gpr176_pos, n_gpr176_neg,
+         frac_receptor_in_pos, frac_receptor_in_neg, odds_ratio, p_value, sig) %>%
+  print(n = Inf)
+
+# -------------------------
+# 10. p値付きバープロット
+# -------------------------
+p_fisher <- ggplot(
+  df_fisher,
+  aes(x = group, y = frac_receptor_in_pos, fill = condition)
+) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.9)) +
+  geom_text(
+    aes(label = sig, y = frac_receptor_in_pos + 0.01),
+    position = position_dodge(width = 0.9),
+    size = 4
+  ) +
+  facet_wrap(~ gene_label, nrow = 1) +
+  labs(
+    title = "Fraction of receptor+ in Gpr176+ cells (Fisher's exact test vs Gpr176- cells)",
+    y = "Fraction of receptor+ (in Gpr176+ cells)",
+    x = "Cell type"
+  ) +
+  fill_condition +
+  theme_all
+
+p_fisher
+
+# n数のテーブルも一緒に出しておくと安心
+df_fisher %>%
+  select(gene_label, group, condition, n_gpr176_pos, n_gpr176_neg) %>%
+  distinct() %>%
+  print(n = Inf)
