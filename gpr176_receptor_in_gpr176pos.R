@@ -120,14 +120,15 @@ print(df_receptor_in_gpr176)
 # -------------------------
 theme_all <- theme_classic() +
   theme(
-    plot.title   = element_text(size = 22, face = "bold", hjust = 0.5),
-    axis.title   = element_text(size = 18),
-    axis.text    = element_text(size = 14),
-    axis.text.x  = element_text(size = 14, face = "bold", angle = 45, hjust = 1),
-    axis.text.y  = element_text(size = 14),
-    legend.title = element_text(size = 16),
-    legend.text  = element_text(size = 14),
-    strip.text   = element_text(size = 16, face = "bold")
+    plot.title   = element_text(size = 16, face = "bold", hjust = 0.5, margin = margin(b = 10)),
+    axis.title   = element_text(size = 14),
+    axis.text    = element_text(size = 12),
+    axis.text.x  = element_text(size = 12, face = "bold", angle = 45, hjust = 1),
+    axis.text.y  = element_text(size = 12),
+    legend.title = element_text(size = 13),
+    legend.text  = element_text(size = 12),
+    strip.text   = element_text(size = 13, face = "bold"),
+    plot.margin  = margin(t = 15, r = 15, b = 10, l = 10)
   )
 
 fill_condition <- scale_fill_manual(values = c("Dark" = "black", "Light" = "orange"))
@@ -151,6 +152,9 @@ p_receptor_in_gpr176 <- ggplot(
 
 p_receptor_in_gpr176
 
+# タイトルが切れる場合は保存時に十分な幅を確保する
+# ggsave("receptor_in_gpr176.png", p_receptor_in_gpr176, width = 10, height = 5, dpi = 300)
+
 # 遺伝子ごとに個別プロットが欲しい場合
 plots_by_gene <- lapply(names(receptor_genes), function(gene_label) {
   df_sub <- df_receptor_in_gpr176 %>% filter(gene_label == !!gene_label)
@@ -169,6 +173,113 @@ names(plots_by_gene) <- names(receptor_genes)
 
 # 例: Avpr1aだけ表示
 # plots_by_gene[["Avpr1a"]]
+
+# =========================================================
+# 7b. 検出感度の確認: Gpr176+に限らない、各受容体のベースライン検出率
+#
+#   Vipr2の「Gpr176+細胞中の陽性率」が高くても、それが
+#   「Gpr176+細胞に本当に濃縮している」のか、
+#   「Vipr2自体がsnRNA-seqで検出されやすい（発現量が高い/dropoutが
+#    少ない）ために、Gpr176+かどうかに関わらず陽性率が高いだけ」
+#   なのかは、これだけでは区別できない。
+#
+#   そこで、Gpr176の陽性/陰性を問わず全細胞での受容体陽性率
+#   （ベースライン）を計算し、
+#     enrichment = (Gpr176+細胞中の陽性率) / (全細胞中の陽性率)
+#   という比を見ることで、単純な検出感度の差を補正した
+#   「Gpr176+細胞への濃縮度」を評価できる。
+#   enrichment ≈ 1 : Gpr176+かどうかによらず一定の発現（濃縮なし）
+#   enrichment > 1  : Gpr176+細胞でその受容体がより多く共発現
+# =========================================================
+
+calc_receptor_baseline <- function(seu, receptor_gene) {
+  expr <- GetAssayData(seu, layer = "data")
+
+  if (!(receptor_gene %in% rownames(expr))) {
+    warning(paste0(receptor_gene, " not found in this object; skipped."))
+    return(NULL)
+  }
+
+  df <- data.frame(
+    cluster2     = as.character(seu$cluster2),
+    receptor_pos = as.vector(expr[receptor_gene, ] > 0)
+  )
+  df$group <- assign_group(df$cluster2)
+
+  by_group <- aggregate(receptor_pos ~ group, data = df, mean)
+  overall  <- data.frame(group = "All", receptor_pos = mean(df$receptor_pos))
+
+  result <- rbind(overall, by_group)
+  result$gene <- receptor_gene
+  result
+}
+
+df_baseline_list <- list()
+
+for (gene_label in names(receptor_genes)) {
+  gene <- receptor_genes[[gene_label]]
+
+  res_dark  <- calc_receptor_baseline(scn_dark,  gene)
+  res_light <- calc_receptor_baseline(scn_light, gene)
+
+  if (!is.null(res_dark))  res_dark$condition  <- "Dark"
+  if (!is.null(res_light)) res_light$condition <- "Light"
+
+  df_baseline_list[[gene_label]] <- bind_rows(res_dark, res_light) %>%
+    mutate(gene_label = gene_label)
+}
+
+df_receptor_baseline <- bind_rows(df_baseline_list) %>%
+  rename(receptor_pos_baseline = receptor_pos)
+
+# Gpr176+細胞中の陽性率とベースラインをマージしてenrichmentを計算
+df_enrichment <- df_receptor_in_gpr176 %>%
+  rename(receptor_pos_in_gpr176 = receptor_pos) %>%
+  left_join(
+    df_receptor_baseline,
+    by = c("group", "gene", "gene_label", "condition")
+  ) %>%
+  mutate(
+    enrichment = receptor_pos_in_gpr176 / receptor_pos_baseline
+  )
+
+print(df_enrichment)
+
+p_enrichment <- ggplot(
+  df_enrichment,
+  aes(x = group, y = enrichment, fill = condition)
+) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  geom_hline(yintercept = 1, linetype = "dashed", color = "grey40") +
+  facet_wrap(~ gene_label, nrow = 1) +
+  labs(
+    title = "Enrichment of receptor+ in Gpr176+ cells (vs. baseline)",
+    y = "Enrichment ratio (Gpr176+ / all cells)",
+    x = "Cell type"
+  ) +
+  fill_condition +
+  theme_all
+
+p_enrichment
+
+# ベースライン検出率そのものも確認しておくとよい
+# （Vipr2が他の受容体よりそもそも高発現/低dropoutなら、
+#   ここでの全体的な値が他の遺伝子より高くなるはず）
+p_baseline <- ggplot(
+  df_receptor_baseline,
+  aes(x = group, y = receptor_pos_baseline, fill = condition)
+) +
+  geom_bar(stat = "identity", position = position_dodge()) +
+  facet_wrap(~ gene_label, nrow = 1) +
+  labs(
+    title = "Baseline detection rate (all cells, regardless of Gpr176)",
+    y = "Fraction of receptor+ (all cells)",
+    x = "Cell type"
+  ) +
+  fill_condition +
+  theme_all
+
+p_baseline
 
 # =========================================================
 # 8. 受容体発現確認ドットプロット（Mtnr1a, Vipr2を追加）
