@@ -534,3 +534,56 @@ df_fisher %>%
   distinct() %>%
   as.data.frame() %>%
   print()
+
+# =========================================================
+# 11. シンプル版: サブタイプなし、Gpr176+ vs Gpr176-を直接比較
+#
+#   サブタイプ別の内訳よりも、「Gpr176+細胞とGpr176-細胞で
+#   受容体陽性率がどれだけ違うか」を直感的に見せたい場合の図。
+#   "All"（SCN全体）のデータだけを使う。
+# =========================================================
+
+df_fisher_all <- df_fisher %>% filter(group == "All")
+
+df_posneg_long <- df_fisher_all %>%
+  select(gene_label, condition, frac_receptor_in_pos, frac_receptor_in_neg) %>%
+  pivot_longer(
+    cols = c(frac_receptor_in_pos, frac_receptor_in_neg),
+    names_to = "gpr176_status",
+    values_to = "fraction"
+  ) %>%
+  mutate(
+    gpr176_status = recode(
+      gpr176_status,
+      frac_receptor_in_pos = "Gpr176+",
+      frac_receptor_in_neg = "Gpr176-"
+    )
+  )
+
+# 有意性マークは棒2本の中央上に1つだけ表示する
+df_sig_label <- df_fisher_all %>%
+  mutate(y_pos = pmax(frac_receptor_in_pos, frac_receptor_in_neg) + 0.02)
+
+fill_gpr176_status <- scale_fill_manual(values = c("Gpr176+" = "forestgreen", "Gpr176-" = "grey70"))
+
+p_posneg <- ggplot(df_posneg_long, aes(x = condition, y = fraction, fill = gpr176_status)) +
+  geom_bar(stat = "identity", position = position_dodge(width = 0.8), width = 0.7) +
+  geom_text(
+    data = df_sig_label,
+    aes(x = condition, y = y_pos, label = sig),
+    inherit.aes = FALSE,
+    size = 4
+  ) +
+  facet_wrap(~ gene_label, nrow = 1) +
+  labs(
+    title = "Receptor+ fraction: Gpr176+ vs Gpr176- cells",
+    y = "Fraction of receptor+ cells",
+    x = "Condition",
+    fill = "Gpr176 status"
+  ) +
+  fill_gpr176_status +
+  theme_all
+
+p_posneg
+
+# ggsave("gpr176_pos_vs_neg.png", p_posneg, width = 12, height = 5, dpi = 300)
